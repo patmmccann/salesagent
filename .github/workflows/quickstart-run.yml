@@ -2,7 +2,7 @@
 # Follows docs/quickstart.md of prebid/salesagent PR #2623 from a clean clone, as a
 # newcomer would: steps 1, 3 and 4 with only ENCRYPTION_KEY set (no Google OAuth
 # client), then "Creating a tenant from the command line", then the step-7 script
-# with x-adcp-tenant: demo. Steps 2 and 5 (Google sign-in) are out of scope.
+# with the Host header the doc gives for demo. Steps 2 and 5 (Google sign-in) are out of scope.
 name: Quickstart run (PR 2623)
 
 on:
@@ -15,7 +15,7 @@ permissions:
 
 env:
   PR_REPO: https://github.com/patmmccann/salesagent.git
-  PR_SHA: a96ded1c302cfd2a47f0302e7e45f745e70d58ad
+  PR_SHA: 881c0562461bc5c28eb6d681b2e8080766e8a463
 
 jobs:
   quickstart:
@@ -135,14 +135,21 @@ jobs:
           awk '/^```python$/{f=1;next} f&&/^```$/{exit} f' docs/quickstart.md > first_call.py
           TOKEN=$(cat ../token.txt)
           echo "NOTE: as a reader, replacing <advertiser-token> with the token from setup_tenant.py"
-          echo "      and the x-adcp-tenant value \"default\" with \"demo\" (the tenant id just created)."
-          sed -i "s|<advertiser-token>|$TOKEN|; s|\"x-adcp-tenant\": \"default\"|\"x-adcp-tenant\": \"demo\"|" first_call.py
+          echo "      and, as the script's comment says for the command-line tenant, the Host value"
+          echo "      \"localhost:8000\" with \"demo.localhost:8000\". Nothing else is changed."
+          sed -i "s|<advertiser-token>|$TOKEN|; s|\"Host\": \"localhost:8000\"|\"Host\": \"demo.localhost:8000\"|" first_call.py
           cat first_call.py
           echo "::endgroup::"
           echo "::group::Step 7: run"
           echo '$ uv run --no-project --with fastmcp python first_call.py'
           uv run --no-project --with fastmcp python first_call.py 2>&1 | tee result.txt
           echo "::endgroup::"
+          # The script catches its own failure and exits 0, so judge by what it printed.
+          if grep -q "The call failed" result.txt || ! grep -q "'products': \[\]" result.txt; then
+            echo "::error::step 7 did not print an empty product list"
+            exit 1
+          fi
+          echo "Step 7 printed an empty product list (products: [])."
 
       - name: Diagnostics (on failure)
         if: failure()
@@ -168,17 +175,6 @@ jobs:
           for h in ['localhost:8000', 'localhost:8080', 'demo.localhost:8000', 'localhost']:
               print(repr(h), '->', tenant_id_for(virtual_host=h))
           "
-          echo "::endgroup::"
-          echo "::group::OFF-DOC check: same script, request addressed to demo by Host"
-          echo "NOT a quickstart step. Adds a Host: demo.localhost:8000 header to the step-7 script"
-          echo "to check whether the call succeeds once the request resolves to tenant demo."
-          sed 's|"x-adcp-tenant": "demo",|"x-adcp-tenant": "demo",\n        "Host": "demo.localhost:8000",|' first_call.py > offdoc_call.py
-          grep -n '"Host"\|x-adcp-tenant' offdoc_call.py
-          uv run --no-project --with fastmcp python offdoc_call.py 2>&1 | tail -5
-          echo "::endgroup::"
-          echo "::group::OFF-DOC check: x-adcp-tenant: default with the demo token"
-          sed 's|"x-adcp-tenant": "demo"|"x-adcp-tenant": "default"|' first_call.py > offdoc2.py
-          uv run --no-project --with fastmcp python offdoc2.py 2>&1 | tail -2
           echo "::endgroup::"
           docker compose logs --no-color adcp-server | grep -E 'POST /mcp|AUTH_|TENANT_' | tail -20
 
