@@ -25,9 +25,9 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ${{ runner.temp }}
     steps:
       - name: Prerequisites (Docker, Docker Compose v2, Git, uv)
+        working-directory: ${{ runner.temp }}
         run: |
           echo "::group::Prerequisites"
           echo '$ docker compose version'; docker compose version
@@ -39,6 +39,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Step 1 - Clone the repository and create .env
+        working-directory: ${{ runner.temp }}
         run: |
           mkdir newcomer && cd newcomer
           echo "::group::Step 1"
