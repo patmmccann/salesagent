@@ -1,0 +1,156 @@
+# Throwaway workflow on patmmccann/salesagent branch agent/quickstart-run-2623 only.
+# Follows docs/quickstart.md of prebid/salesagent PR #2623 from a clean clone, as a
+# newcomer would: steps 1, 3 and 4 with only ENCRYPTION_KEY set (no Google OAuth
+# client), then "Creating a tenant from the command line", then the step-7 script
+# with x-adcp-tenant: demo. Steps 2 and 5 (Google sign-in) are out of scope.
+name: Quickstart run (PR 2623)
+
+on:
+  push:
+    branches: [agent/quickstart-run-2623]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PR_REPO: https://github.com/patmmccann/salesagent.git
+  PR_SHA: a96ded1c302cfd2a47f0302e7e45f745e70d58ad
+
+jobs:
+  quickstart:
+    if: github.repository == 'patmmccann/salesagent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ runner.temp }}
+    steps:
+      - name: Prerequisites (Docker, Docker Compose v2, Git, uv)
+        run: |
+          echo "::group::Prerequisites"
+          echo '$ docker compose version'; docker compose version
+          echo '$ git --version'; git --version
+          echo 'NOTE: uv is installed with the official installer linked from the prerequisites'
+          echo '$ curl -LsSf https://astral.sh/uv/install.sh | sh'
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "::endgroup::"
+
+      - name: Step 1 - Clone the repository and create .env
+        run: |
+          mkdir newcomer && cd newcomer
+          echo "::group::Step 1"
+          echo "NOTE: the doc clones prebid/salesagent; to test PR #2623 the PR's fork is cloned"
+          echo "      instead and checked out at the PR head commit $PR_SHA."
+          echo "\$ git clone $PR_REPO   (doc: git clone https://github.com/prebid/salesagent.git)"
+          git clone "$PR_REPO"
+          echo '$ cd salesagent'
+          cd salesagent
+          echo "\$ git checkout --detach $PR_SHA"
+          git checkout --detach "$PR_SHA"
+          git log -1 --format='Tested commit: %H %s'
+          echo '$ cp .env.template .env'
+          cp .env.template .env
+          echo "::endgroup::"
+
+      - name: Step 3 - Configure .env (ENCRYPTION_KEY only)
+        working-directory: ${{ runner.temp }}/newcomer/salesagent
+        run: |
+          echo "::group::Step 3"
+          echo "NOTE: only ENCRYPTION_KEY is added; no Google OAuth client (steps 2 and 5 out of scope)."
+          echo "Generating the key with the doc's first command:"
+          echo "\$ openssl rand -base64 32 | tr '+/' '-_'"
+          KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+          echo "::add-mask::$KEY"
+          echo "ENCRYPTION_KEY=$KEY" >> .env
+          echo '$ grep -n "^ENCRYPTION_KEY=" .env   (value masked)'
+          grep -n '^ENCRYPTION_KEY=' .env
+          echo "::endgroup::"
+
+      - name: Step 4 - Start the stack
+        working-directory: ${{ runner.temp }}/newcomer/salesagent
+        run: |
+          echo "::group::Step 4: docker compose up -d"
+          echo '$ docker compose up -d'
+          start=$(date +%s)
+          docker compose up -d
+          echo "docker compose up -d returned after $(( $(date +%s) - start ))s"
+          echo "::endgroup::"
+          echo "::group::Step 4: docker compose ps (repeat until adcp-server shows (healthy))"
+          healthy=""
+          for i in $(seq 1 60); do
+            echo "\$ docker compose ps   (attempt $i, $(( $(date +%s) - start ))s since up)"
+            out=$(docker compose ps)
+            echo "$out"
+            if echo "$out" | grep -E '^\S*adcp-server' | grep -q '(healthy)'; then healthy=1; break; fi
+            sleep 10
+          done
+          echo "::endgroup::"
+          if [ -z "$healthy" ]; then
+            echo "::error::adcp-server never reported (healthy)"
+            docker compose logs --no-color | tail -300
+            exit 1
+          fi
+          echo "::group::Step 4: curl http://localhost:8000/health"
+          echo '$ curl http://localhost:8000/health'
+          curl http://localhost:8000/health
+          echo
+          echo "::endgroup::"
+
+      - name: Step 6 - Creating a tenant from the command line
+        working-directory: ${{ runner.temp }}/newcomer/salesagent
+        run: |
+          echo "::group::Step 6: setup_tenant.py"
+          echo '$ docker compose exec adcp-server python -m scripts.setup.setup_tenant "Demo Publisher" \'
+          echo '    --tenant-id demo --virtual-host demo.localhost:8000'
+          set +e
+          docker compose exec adcp-server python -m scripts.setup.setup_tenant "Demo Publisher" \
+            --tenant-id demo --virtual-host demo.localhost:8000 > tenant.out 2>&1
+          rc=$?
+          set -e
+          echo "exit code: $rc"
+          if grep -q 'not a TTY' tenant.out; then
+            echo "NOTE: runner has no TTY; retrying with -T (runner reason, not a doc defect)"
+            docker compose exec -T adcp-server python -m scripts.setup.setup_tenant "Demo Publisher" \
+              --tenant-id demo --virtual-host demo.localhost:8000 > tenant.out 2>&1 && rc=0 || rc=$?
+          fi
+          # A reader copies the token from the line after "Principal Token (for MCP/A2A API):".
+          TOKEN=$(grep -A1 'Principal Token (for MCP/A2A API):' tenant.out | tail -1 | tr -d ' \r')
+          if [ -n "$TOKEN" ]; then echo "::add-mask::$TOKEN"; fi
+          cat tenant.out
+          echo "::endgroup::"
+          [ "$rc" = 0 ] || exit "$rc"
+          [ -n "$TOKEN" ] || { echo "::error::no token found in setup_tenant output"; exit 1; }
+          echo "NOTE: token extracted from the line after 'Principal Token (for MCP/A2A API):' as a reader would copy it (masked in this log)."
+          echo "$TOKEN" > ../token.txt
+
+      - name: Step 7 - Connect an AI agent
+        working-directory: ${{ runner.temp }}/newcomer/salesagent
+        run: |
+          echo "::group::Step 7: save first_call.py"
+          echo "Extracting the first \`\`\`python block from docs/quickstart.md verbatim:"
+          awk '/^```python$/{f=1;next} f&&/^```$/{exit} f' docs/quickstart.md > first_call.py
+          TOKEN=$(cat ../token.txt)
+          echo "NOTE: as a reader, replacing <advertiser-token> with the token from setup_tenant.py"
+          echo "      and the x-adcp-tenant value \"default\" with \"demo\" (the tenant id just created)."
+          sed -i "s|<advertiser-token>|$TOKEN|; s|\"x-adcp-tenant\": \"default\"|\"x-adcp-tenant\": \"demo\"|" first_call.py
+          cat first_call.py
+          echo "::endgroup::"
+          echo "::group::Step 7: run"
+          echo '$ uv run --no-project --with fastmcp python first_call.py'
+          uv run --no-project --with fastmcp python first_call.py 2>&1 | tee result.txt
+          echo "::endgroup::"
+
+      - name: Diagnostics (on failure)
+        if: failure()
+        working-directory: ${{ runner.temp }}/newcomer/salesagent
+        run: |
+          docker compose ps -a || true
+          docker compose logs --no-color | tail -400 || true
+
+      - name: Tear down
+        if: always()
+        working-directory: ${{ runner.temp }}/newcomer/salesagent
+        run: docker compose down -v || true
